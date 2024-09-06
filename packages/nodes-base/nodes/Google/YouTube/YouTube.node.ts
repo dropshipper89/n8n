@@ -23,6 +23,7 @@ import { videoFields, videoOperations } from './VideoDescription';
 import { videoCategoryFields, videoCategoryOperations } from './VideoCategoryDescription';
 
 import { isoCountryCodes } from '@utils/ISOCountryCodes';
+import { DateTime } from 'luxon';
 
 const UPLOAD_CHUNK_SIZE = 1024 * 1024;
 
@@ -762,6 +763,14 @@ export class YouTube implements INodeType {
 						qs.type = 'video';
 
 						qs.forMine = true;
+						if (filters.publishedAfter)
+							filters.publishedAfter = DateTime.fromISO(filters.publishedAfter as string)
+								.setZone(this.getTimezone())
+								.toISO();
+						if (filters.publishedBefore)
+							filters.publishedBefore = DateTime.fromISO(filters.publishedBefore as string)
+								.setZone(this.getTimezone())
+								.toISO();
 
 						Object.assign(qs, options, filters);
 
