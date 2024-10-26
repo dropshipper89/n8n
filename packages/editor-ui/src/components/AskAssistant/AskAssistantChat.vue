@@ -33,7 +33,7 @@ async function onUserMessage(content: string, quickReplyType?: string, isFeedbac
 	} else {
 		await assistantStore.sendMessage({ text: content, quickReplyType });
 	}
-	const task = assistantStore.isSupportChatSessionInProgress ? 'support' : 'error';
+	const task = assistantStore.chatSessionTask;
 	const solutionCount = assistantStore.chatMessages.filter(
 		(msg) => msg.role === 'assistant' && !['text', 'event'].includes(msg.type),
 	).length;
@@ -83,6 +83,8 @@ function onClose() {
 				:style="{ width: `${assistantStore.chatWidth}px` }"
 				:class="$style.wrapper"
 				data-test-id="ask-assistant-chat"
+				tabindex="0"
+				@keydown.stop
 			>
 				<AskAssistantChat
 					:user="user"
@@ -104,7 +106,7 @@ function onClose() {
 .container {
 	height: 100%;
 	flex-basis: content;
-	z-index: 300;
+	z-index: var(--z-index-ask-assistant-chat);
 }
 
 .wrapper {

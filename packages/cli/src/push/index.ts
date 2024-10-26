@@ -1,23 +1,24 @@
+import type { PushPayload, PushType } from '@n8n/api-types';
+import type { Application } from 'express';
 import { ServerResponse } from 'http';
 import type { Server } from 'http';
 import type { Socket } from 'net';
-import type { Application } from 'express';
-import { Server as WSServer } from 'ws';
-import { parse as parseUrl } from 'url';
 import { Container, Service } from 'typedi';
+import { parse as parseUrl } from 'url';
+import { Server as WSServer } from 'ws';
 
-import config from '@/config';
-import { OnShutdown } from '@/decorators/on-shutdown';
 import { AuthService } from '@/auth/auth.service';
+import config from '@/config';
+import type { User } from '@/databases/entities/user';
+import { OnShutdown } from '@/decorators/on-shutdown';
 import { BadRequestError } from '@/errors/response-errors/bad-request.error';
-import type { IPushDataType } from '@/interfaces';
+import { Publisher } from '@/scaling/pubsub/publisher.service';
 import { OrchestrationService } from '@/services/orchestration.service';
+import { TypedEmitter } from '@/typed-emitter';
 
 import { SSEPush } from './sse.push';
-import { WebSocketPush } from './websocket.push';
 import type { OnPushMessage, PushResponse, SSEPushRequest, WebSocketPushRequest } from './types';
-import { TypedEmitter } from '@/typed-emitter';
-import type { User } from '@/databases/entities/user';
+import { WebSocketPush } from './websocket.push';
 
 type PushEvents = {
 	editorUiConnected: string;
@@ -39,10 +40,17 @@ export class Push extends TypedEmitter<PushEvents> {
 
 	private backend = useWebSockets ? Container.get(WebSocketPush) : Container.get(SSEPush);
 
-	constructor(private readonly orchestrationService: OrchestrationService) {
+	constructor(
+		private readonly orchestrationService: OrchestrationService,
+		private readonly publisher: Publisher,
+	) {
 		super();
 
 		if (useWebSockets) this.backend.on('message', (msg) => this.emit('message', msg));
+	}
+
+	getBackend() {
+		return this.backend;
 	}
 
 	handleRequest(req: SSEPushRequest | WebSocketPushRequest, res: PushResponse) {
@@ -73,11 +81,11 @@ export class Push extends TypedEmitter<PushEvents> {
 		this.emit('editorUiConnected', pushRef);
 	}
 
-	broadcast(type: IPushDataType, data?: unknown) {
+	broadcast<Type extends PushType>(type: Type, data: PushPayload<Type>) {
 		this.backend.sendToAll(type, data);
 	}
 
-	send(type: IPushDataType, data: unknown, pushRef: string) {
+	send<Type extends PushType>(type: Type, data: PushPayload<Type>, pushRef: string) {
 		/**
 		 * Multi-main setup: In a manual webhook execution, the main process that
 		 * handles a webhook might not be the same as the main process that created
@@ -85,19 +93,21 @@ export class Push extends TypedEmitter<PushEvents> {
 		 * relay the former's execution lifecycle events to the creator's frontend.
 		 */
 		if (this.orchestrationService.isMultiMainSetupEnabled && !this.backend.hasPushRef(pushRef)) {
-			const payload = { type, args: data, pushRef };
-			void this.orchestrationService.publish('relay-execution-lifecycle-event', payload);
+			void this.publisher.publishCommand({
+				command: 'relay-execution-lifecycle-event',
+				payload: { type, args: data, pushRef },
+			});
 			return;
 		}
 
 		this.backend.sendToOne(type, data, pushRef);
 	}
 
-	getBackend() {
-		return this.backend;
-	}
-
-	sendToUsers(type: IPushDataType, data: unknown, userIds: Array<User['id']>) {
+	sendToUsers<Type extends PushType>(
+		type: Type,
+		data: PushPayload<Type>,
+		userIds: Array<User['id']>,
+	) {
 		this.backend.sendToUsers(type, data, userIds);
 	}
 

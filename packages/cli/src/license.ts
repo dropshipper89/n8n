@@ -1,9 +1,16 @@
+import { GlobalConfig } from '@n8n/config';
 import type { TEntitlement, TFeatures, TLicenseBlock } from '@n8n_io/license-sdk';
 import { LicenseManager } from '@n8n_io/license-sdk';
 import { InstanceSettings, ObjectStoreService } from 'n8n-core';
 import Container, { Service } from 'typedi';
-import { Logger } from '@/logger';
+
 import config from '@/config';
+import { SettingsRepository } from '@/databases/repositories/settings.repository';
+import { OnShutdown } from '@/decorators/on-shutdown';
+import { Logger } from '@/logging/logger.service';
+import { LicenseMetricsService } from '@/metrics/license-metrics.service';
+import { OrchestrationService } from '@/services/orchestration.service';
+
 import {
 	LICENSE_FEATURES,
 	LICENSE_QUOTAS,
@@ -11,15 +18,9 @@ import {
 	SETTINGS_LICENSE_CERT_KEY,
 	UNLIMITED_LICENSE_QUOTA,
 } from './constants';
-import { SettingsRepository } from '@/databases/repositories/settings.repository';
-import type { BooleanLicenseFeature, N8nInstanceType, NumericLicenseFeature } from './interfaces';
-import type { RedisServicePubSubPublisher } from './services/redis/redis-service-pub-sub-publisher';
-import { RedisService } from './services/redis.service';
-import { OrchestrationService } from '@/services/orchestration.service';
-import { OnShutdown } from '@/decorators/on-shutdown';
-import { LicenseMetricsService } from '@/metrics/license-metrics.service';
+import type { BooleanLicenseFeature, NumericLicenseFeature } from './interfaces';
 
-type FeatureReturnType = Partial<
+export type FeatureReturnType = Partial<
 	{
 		planName: string;
 	} & { [K in NumericLicenseFeature]: number } & { [K in BooleanLicenseFeature]: boolean }
@@ -29,8 +30,6 @@ type FeatureReturnType = Partial<
 export class License {
 	private manager: LicenseManager | undefined;
 
-	private redisPublisher: RedisServicePubSubPublisher;
-
 	private isShuttingDown = false;
 
 	constructor(
@@ -39,13 +38,16 @@ export class License {
 		private readonly orchestrationService: OrchestrationService,
 		private readonly settingsRepository: SettingsRepository,
 		private readonly licenseMetricsService: LicenseMetricsService,
-	) {}
+		private readonly globalConfig: GlobalConfig,
+	) {
+		this.logger = this.logger.scoped('license');
+	}
 
 	/**
 	 * Whether this instance should renew the license - on init and periodically.
 	 */
-	private renewalEnabled(instanceType: N8nInstanceType) {
-		if (instanceType !== 'main') return false;
+	private renewalEnabled() {
+		if (this.instanceSettings.instanceType !== 'main') return false;
 
 		const autoRenewEnabled = config.getEnv('license.autoRenewEnabled');
 
@@ -54,14 +56,14 @@ export class License {
 		 * On becoming leader or follower, each will enable or disable renewal, respectively.
 		 * This ensures the mains do not cause a 429 (too many requests) on license init.
 		 */
-		if (config.getEnv('multiMainSetup.enabled')) {
+		if (this.globalConfig.multiMainSetup.enabled) {
 			return autoRenewEnabled && this.instanceSettings.isLeader;
 		}
 
 		return autoRenewEnabled;
 	}
 
-	async init(instanceType: N8nInstanceType = 'main', forceRecreate = false) {
+	async init(forceRecreate = false) {
 		if (this.manager && !forceRecreate) {
 			this.logger.warn('License manager already initialized or shutting down');
 			return;
@@ -71,6 +73,7 @@ export class License {
 			return;
 		}
 
+		const { instanceType } = this.instanceSettings;
 		const isMainInstance = instanceType === 'main';
 		const server = config.getEnv('license.serverUrl');
 		const offlineMode = !isMainInstance;
@@ -88,7 +91,7 @@ export class License {
 			? async () => await this.licenseMetricsService.collectPassthroughData()
 			: async () => ({});
 
-		const renewalEnabled = this.renewalEnabled(instanceType);
+		const renewalEnabled = this.renewalEnabled();
 
 		try {
 			this.manager = new LicenseManager({
@@ -110,9 +113,9 @@ export class License {
 
 			await this.manager.initialize();
 			this.logger.debug('License initialized');
-		} catch (e: unknown) {
-			if (e instanceof Error) {
-				this.logger.error('Could not initialize license manager sdk', e);
+		} catch (error: unknown) {
+			if (error instanceof Error) {
+				this.logger.error('Could not initialize license manager sdk', { error });
 			}
 		}
 	}
@@ -135,19 +138,16 @@ export class License {
 	async onFeatureChange(_features: TFeatures): Promise<void> {
 		this.logger.debug('License feature change detected', _features);
 
-		if (config.getEnv('executions.mode') === 'queue' && config.getEnv('multiMainSetup.enabled')) {
+		if (config.getEnv('executions.mode') === 'queue' && this.globalConfig.multiMainSetup.enabled) {
 			const isMultiMainLicensed = _features[LICENSE_FEATURES.MULTIPLE_MAIN_INSTANCES] as
 				| boolean
 				| undefined;
 
 			this.orchestrationService.setMultiMainSetupLicensed(isMultiMainLicensed ?? false);
 
-			if (
-				this.orchestrationService.isMultiMainSetupEnabled &&
-				this.orchestrationService.isFollower
-			) {
+			if (this.orchestrationService.isMultiMainSetupEnabled && this.instanceSettings.isFollower) {
 				this.logger.debug(
-					'[Multi-main setup] Instance is follower, skipping sending of "reloadLicense" command...',
+					'[Multi-main setup] Instance is follower, skipping sending of "reload-license" command...',
 				);
 				return;
 			}
@@ -160,13 +160,8 @@ export class License {
 		}
 
 		if (config.getEnv('executions.mode') === 'queue') {
-			if (!this.redisPublisher) {
-				this.logger.debug('Initializing Redis publisher for License Service');
-				this.redisPublisher = await Container.get(RedisService).getPubSubPublisher();
-			}
-			await this.redisPublisher.publishToCommandChannel({
-				command: 'reloadLicense',
-			});
+			const { Publisher } = await import('@/scaling/pubsub/publisher.service');
+			await Container.get(Publisher).publishCommand({ command: 'reload-license' });
 		}
 
 		const isS3Selected = config.getEnv('binaryDataManager.mode') === 's3';
@@ -257,6 +252,10 @@ export class License {
 
 	isAiAssistantEnabled() {
 		return this.isFeatureEnabled(LICENSE_FEATURES.AI_ASSISTANT);
+	}
+
+	isAskAiEnabled() {
+		return this.isFeatureEnabled(LICENSE_FEATURES.ASK_AI);
 	}
 
 	isAdvancedExecutionFiltersEnabled() {
@@ -397,7 +396,7 @@ export class License {
 
 	async reinit() {
 		this.manager?.reset();
-		await this.init('main', true);
+		await this.init(true);
 		this.logger.debug('License reinitialized');
 	}
 }

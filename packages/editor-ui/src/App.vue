@@ -16,6 +16,7 @@ import { useUIStore } from '@/stores/ui.store';
 import { useUsersStore } from '@/stores/users.store';
 import { useSettingsStore } from '@/stores/settings.store';
 import { useHistoryHelper } from '@/composables/useHistoryHelper';
+import { useStyles } from './composables/useStyles';
 
 const route = useRoute();
 const rootStore = useRootStore();
@@ -24,13 +25,15 @@ const uiStore = useUIStore();
 const usersStore = useUsersStore();
 const settingsStore = useSettingsStore();
 
+const { setAppZIndexes } = useStyles();
+
 // Initialize undo/redo
 useHistoryHelper(route);
 
 const loading = ref(true);
 const defaultLocale = computed(() => rootStore.defaultLocale);
 const isDemoMode = computed(() => route.name === VIEWS.DEMO);
-const showAssistantButton = computed(() => assistantStore.canShowAssistantButtons);
+const showAssistantButton = computed(() => assistantStore.canShowAssistantButtonsOnCanvas);
 
 const appGrid = ref<Element | null>(null);
 
@@ -41,6 +44,7 @@ watch(defaultLocale, (newLocale) => {
 });
 
 onMounted(async () => {
+	setAppZIndexes();
 	logHiringBanner();
 	void useExternalHooks().run('app.mount');
 	loading.value = false;
@@ -134,7 +138,7 @@ const updateGridWidth = async () => {
 
 .banners {
 	grid-area: banners;
-	z-index: 999;
+	z-index: var(--z-index-top-banners);
 }
 
 .content {
@@ -154,13 +158,13 @@ const updateGridWidth = async () => {
 
 .header {
 	grid-area: header;
-	z-index: 99;
+	z-index: var(--z-index-app-header);
 }
 
 .sidebar {
 	grid-area: sidebar;
 	height: 100%;
-	z-index: 999;
+	z-index: var(--z-index-app-sidebar);
 }
 
 .modals {

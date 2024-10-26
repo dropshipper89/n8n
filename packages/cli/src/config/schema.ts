@@ -1,10 +1,10 @@
-import path from 'path';
-import convict from 'convict';
-import { Container } from 'typedi';
-import { InstanceSettings } from 'n8n-core';
-import { LOG_LEVELS } from 'n8n-workflow';
-import { ensureStringArray } from './utils';
 import { GlobalConfig } from '@n8n/config';
+import convict from 'convict';
+import { InstanceSettings } from 'n8n-core';
+import path from 'path';
+import { Container } from 'typedi';
+
+import { ensureStringArray } from './utils';
 
 convict.addFormat({
 	name: 'comma-separated-list',
@@ -162,39 +162,6 @@ export const schema = {
 		},
 	},
 
-	generic: {
-		// The timezone to use. Is important for nodes like "Cron" which start the
-		// workflow automatically at a specified time. This setting can also be
-		// overwritten on a per workflow basis in the workflow settings in the
-		// editor.
-		timezone: {
-			doc: 'The timezone to use',
-			format: '*',
-			default: 'America/New_York',
-			env: 'GENERIC_TIMEZONE',
-		},
-
-		instanceType: {
-			doc: 'Type of n8n instance',
-			format: ['main', 'webhook', 'worker'] as const,
-			default: 'main',
-		},
-
-		releaseChannel: {
-			doc: 'N8N release channel',
-			format: ['stable', 'beta', 'nightly', 'dev'] as const,
-			default: 'dev',
-			env: 'N8N_RELEASE_TYPE',
-		},
-
-		gracefulShutdownTimeout: {
-			doc: 'How long should n8n process wait for components to shut down before exiting the process (seconds)',
-			format: Number,
-			default: 30,
-			env: 'N8N_GRACEFUL_SHUTDOWN_TIMEOUT',
-		},
-	},
-
 	secure_cookie: {
 		doc: 'This sets the `Secure` flag on n8n auth cookie',
 		format: Boolean,
@@ -299,41 +266,6 @@ export const schema = {
 		format: String,
 		default: '',
 		env: 'EXTERNAL_HOOK_FILES',
-	},
-
-	logs: {
-		level: {
-			doc: 'Log output level',
-			format: LOG_LEVELS,
-			default: 'info',
-			env: 'N8N_LOG_LEVEL',
-		},
-		output: {
-			doc: 'Where to output logs. Options are: console, file. Multiple can be separated by comma (",")',
-			format: String,
-			default: 'console',
-			env: 'N8N_LOG_OUTPUT',
-		},
-		file: {
-			fileCountMax: {
-				doc: 'Maximum number of files to keep.',
-				format: Number,
-				default: 100,
-				env: 'N8N_LOG_FILE_COUNT_MAX',
-			},
-			fileSizeMax: {
-				doc: 'Maximum size for each log file in MB.',
-				format: Number,
-				default: 16,
-				env: 'N8N_LOG_FILE_SIZE_MAX',
-			},
-			location: {
-				doc: 'Log file location; only used if log output is set to file.',
-				format: String,
-				default: path.join(Container.get(InstanceSettings).n8nFolder, 'logs/n8n.log'),
-				env: 'N8N_LOG_FILE_LOCATION',
-			},
-		},
 	},
 
 	push: {
@@ -457,14 +389,6 @@ export const schema = {
 					env: 'N8N_DIAGNOSTICS_POSTHOG_API_HOST',
 				},
 			},
-			sentry: {
-				dsn: {
-					doc: 'Data source name for error tracking on Sentry',
-					format: String,
-					default: '',
-					env: 'N8N_SENTRY_DSN',
-				},
-			},
 			frontend: {
 				doc: 'Diagnostics config for frontend.',
 				format: String,
@@ -540,11 +464,6 @@ export const schema = {
 			default: 'n8n',
 			env: 'N8N_REDIS_KEY_PREFIX',
 		},
-		queueModeId: {
-			doc: 'Unique ID for this n8n instance, is usually set automatically by n8n during startup',
-			format: String,
-			default: '',
-		},
 	},
 
 	/**
@@ -618,31 +537,19 @@ export const schema = {
 		},
 	},
 
-	multiMainSetup: {
-		enabled: {
-			doc: 'Whether to enable multi-main setup for queue mode (license required)',
-			format: Boolean,
-			default: false,
-			env: 'N8N_MULTI_MAIN_SETUP_ENABLED',
-		},
-		ttl: {
-			doc: 'Time to live (in seconds) for leader key in multi-main setup',
-			format: Number,
-			default: 10,
-			env: 'N8N_MULTI_MAIN_SETUP_KEY_TTL',
-		},
-		interval: {
-			doc: 'Interval (in seconds) for leader check in multi-main setup',
-			format: Number,
-			default: 3,
-			env: 'N8N_MULTI_MAIN_SETUP_CHECK_INTERVAL',
-		},
-	},
-
 	proxy_hops: {
 		format: Number,
 		default: 0,
 		env: 'N8N_PROXY_HOPS',
 		doc: 'Number of reverse-proxies n8n is running behind',
+	},
+
+	featureFlags: {
+		partialExecutionVersionDefault: {
+			format: String,
+			default: '0',
+			env: 'PARTIAL_EXECUTION_VERSION_DEFAULT',
+			doc: 'Set this to 1 to enable the new partial execution logic by default.',
+		},
 	},
 };

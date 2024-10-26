@@ -1,7 +1,7 @@
 import 'cypress-real-events';
+import type { FrontendSettings } from '@n8n/api-types';
 import FakeTimers from '@sinonjs/fake-timers';
-import type { IN8nUISettings } from 'n8n-workflow';
-import { WorkflowPage } from '../pages';
+
 import {
 	BACKEND_BASE_URL,
 	INSTANCE_ADMIN,
@@ -9,7 +9,8 @@ import {
 	INSTANCE_OWNER,
 	N8N_AUTH_COOKIE,
 } from '../constants';
-import { getUniqueWorkflowName } from '../utils/workflowUtils';
+import { WorkflowPage } from '../pages';
+import { getUniqueWorkflowName, isCanvasV2 } from '../utils/workflowUtils';
 
 Cypress.Commands.add('setAppDate', (targetDate: number | Date) => {
 	cy.window().then((win) => {
@@ -23,6 +24,10 @@ Cypress.Commands.add('setAppDate', (targetDate: number | Date) => {
 
 Cypress.Commands.add('getByTestId', (selector, ...args) => {
 	return cy.get(`[data-test-id="${selector}"]`, ...args);
+});
+
+Cypress.Commands.add('ifCanvasVersion', (getterV1, getterV2) => {
+	return isCanvasV2() ? getterV2() : getterV1();
 });
 
 Cypress.Commands.add(
@@ -69,6 +74,10 @@ Cypress.Commands.add('signin', ({ email, password }) => {
 			})
 			.then((response) => {
 				Cypress.env('currentUserId', response.body.data.id);
+
+				cy.window().then((win) => {
+					win.localStorage.setItem('NodeView.switcher.discovered', 'true'); // @TODO Remove this once the switcher is removed
+				});
 			});
 	});
 });
@@ -86,8 +95,8 @@ Cypress.Commands.add('signout', () => {
 	cy.getCookie(N8N_AUTH_COOKIE).should('not.exist');
 });
 
-export let settings: Partial<IN8nUISettings>;
-Cypress.Commands.add('overrideSettings', (value: Partial<IN8nUISettings>) => {
+export let settings: Partial<FrontendSettings>;
+Cypress.Commands.add('overrideSettings', (value: Partial<FrontendSettings>) => {
 	settings = value;
 });
 

@@ -1,5 +1,10 @@
 import { render } from '@testing-library/vue';
+
+import { n8nHtml } from 'n8n-design-system/directives';
+
 import AskAssistantChat from '../AskAssistantChat.vue';
+
+const stubs = ['n8n-avatar', 'n8n-button', 'n8n-icon', 'n8n-icon-button'];
 
 describe('AskAssistantChat', () => {
 	it('renders default placeholder chat correctly', () => {
@@ -7,11 +12,19 @@ describe('AskAssistantChat', () => {
 			props: {
 				user: { firstName: 'Kobi', lastName: 'Dog' },
 			},
+			global: { stubs },
 		});
 		expect(container).toMatchSnapshot();
 	});
+
 	it('renders chat with messages correctly', () => {
 		const { container } = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
 			props: {
 				user: { firstName: 'Kobi', lastName: 'Dog' },
 				messages: [
@@ -84,8 +97,15 @@ describe('AskAssistantChat', () => {
 		});
 		expect(container).toMatchSnapshot();
 	});
+
 	it('renders streaming chat correctly', () => {
 		const { container } = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
 			props: {
 				user: { firstName: 'Kobi', lastName: 'Dog' },
 				messages: [
@@ -98,13 +118,20 @@ describe('AskAssistantChat', () => {
 						read: false,
 					},
 				],
-				isStreaming: true,
+				streaming: true,
 			},
 		});
 		expect(container).toMatchSnapshot();
 	});
+
 	it('renders end of session chat correctly', () => {
 		const { container } = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
 			props: {
 				user: { firstName: 'Kobi', lastName: 'Dog' },
 				messages: [
@@ -127,5 +154,86 @@ describe('AskAssistantChat', () => {
 			},
 		});
 		expect(container).toMatchSnapshot();
+	});
+
+	it('renders message with code snippet', () => {
+		const { container } = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
+			props: {
+				user: { firstName: 'Kobi', lastName: 'Dog' },
+				messages: [
+					{
+						id: '1',
+						type: 'text',
+						role: 'assistant',
+						content:
+							'Hi Max! Here is my top solution to fix the error in your **Transform data** node👇',
+						codeSnippet:
+							"node.on('input', function(msg) {\n  if (msg.seed) { dummyjson.seed = msg.seed; }\n  try {\n      var value = dummyjson.parse(node.template, {mockdata: msg});\n      if (node.syntax === 'json') {\n          try { value = JSON.parse(value); }\n          catch(e) { node.error(RED._('datagen.errors.json-error')); }\n      }\n      if (node.fieldType === 'msg') {\n          RED.util.setMessageProperty(msg,node.field,value);\n      }\n      else if (node.fieldType === 'flow') {\n          node.context().flow.set(node.field,value);\n      }\n      else if (node.fieldType === 'global') {\n          node.context().global.set(node.field,value);\n      }\n      node.send(msg);\n  }\n  catch(e) {",
+						read: false,
+					},
+				],
+			},
+		});
+		expect(container).toMatchSnapshot();
+	});
+
+	it('renders error message correctly with retry button', () => {
+		const wrapper = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
+			props: {
+				user: { firstName: 'Kobi', lastName: 'Dog' },
+				messages: [
+					{
+						id: '1',
+						role: 'assistant',
+						type: 'error',
+						content: 'This is an error message.',
+						read: false,
+						// Button is not shown without a retry function
+						retry: async () => {},
+					},
+				],
+			},
+		});
+		expect(wrapper.container).toMatchSnapshot();
+		expect(wrapper.getByTestId('error-retry-button')).toBeInTheDocument();
+	});
+
+	it('does not render retry button if no error is present', () => {
+		const wrapper = render(AskAssistantChat, {
+			global: {
+				directives: {
+					n8nHtml,
+				},
+				stubs,
+			},
+			props: {
+				user: { firstName: 'Kobi', lastName: 'Dog' },
+				messages: [
+					{
+						id: '1',
+						type: 'text',
+						role: 'assistant',
+						content:
+							'Hi Max! Here is my top solution to fix the error in your **Transform data** node👇',
+						read: false,
+					},
+				],
+			},
+		});
+
+		expect(wrapper.container).toMatchSnapshot();
+		expect(wrapper.queryByTestId('error-retry-button')).not.toBeInTheDocument();
 	});
 });

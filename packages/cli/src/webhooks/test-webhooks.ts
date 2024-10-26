@@ -1,5 +1,5 @@
 import type express from 'express';
-import { Service } from 'typedi';
+import * as NodeExecuteFunctions from 'n8n-core';
 import { WebhookPathTakenError, Workflow } from 'n8n-workflow';
 import type {
 	IWebhookData,
@@ -7,26 +7,29 @@ import type {
 	IHttpRequestMethods,
 	IRunData,
 } from 'n8n-workflow';
+import { Service } from 'typedi';
+
+import { TEST_WEBHOOK_TIMEOUT } from '@/constants';
+import { NotFoundError } from '@/errors/response-errors/not-found.error';
+import { WebhookNotFoundError } from '@/errors/response-errors/webhook-not-found.error';
+import { WorkflowMissingIdError } from '@/errors/workflow-missing-id.error';
+import type { IWorkflowDb } from '@/interfaces';
+import { NodeTypes } from '@/node-types';
+import { Push } from '@/push';
+import { Publisher } from '@/scaling/pubsub/publisher.service';
+import { OrchestrationService } from '@/services/orchestration.service';
+import { removeTrailingSlash } from '@/utils';
+import type { TestWebhookRegistration } from '@/webhooks/test-webhook-registrations.service';
+import { TestWebhookRegistrationsService } from '@/webhooks/test-webhook-registrations.service';
+import * as WebhookHelpers from '@/webhooks/webhook-helpers';
+import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
+
 import type {
 	IWebhookResponseCallbackData,
 	IWebhookManager,
 	WebhookAccessControlOptions,
 	WebhookRequest,
 } from './webhook.types';
-import { Push } from '@/push';
-import { NodeTypes } from '@/node-types';
-import * as WebhookHelpers from '@/webhooks/webhook-helpers';
-import { TEST_WEBHOOK_TIMEOUT } from '@/constants';
-import { NotFoundError } from '@/errors/response-errors/not-found.error';
-import { WorkflowMissingIdError } from '@/errors/workflow-missing-id.error';
-import { WebhookNotFoundError } from '@/errors/response-errors/webhook-not-found.error';
-import * as NodeExecuteFunctions from 'n8n-core';
-import { removeTrailingSlash } from '@/utils';
-import type { TestWebhookRegistration } from '@/webhooks/test-webhook-registrations.service';
-import { TestWebhookRegistrationsService } from '@/webhooks/test-webhook-registrations.service';
-import { OrchestrationService } from '@/services/orchestration.service';
-import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
-import type { IWorkflowDb } from '@/interfaces';
 
 /**
  * Service for handling the execution of webhooks of manual executions
@@ -39,6 +42,7 @@ export class TestWebhooks implements IWebhookManager {
 		private readonly nodeTypes: NodeTypes,
 		private readonly registrations: TestWebhookRegistrationsService,
 		private readonly orchestrationService: OrchestrationService,
+		private readonly publisher: Publisher,
 	) {}
 
 	private timeouts: { [webhookKey: string]: NodeJS.Timeout } = {};
@@ -154,8 +158,10 @@ export class TestWebhooks implements IWebhookManager {
 				pushRef &&
 				!this.push.getBackend().hasPushRef(pushRef)
 			) {
-				const payload = { webhookKey: key, workflowEntity, pushRef };
-				void this.orchestrationService.publish('clear-test-webhooks', payload);
+				void this.publisher.publishCommand({
+					command: 'clear-test-webhooks',
+					payload: { webhookKey: key, workflowEntity, pushRef },
+				});
 				return;
 			}
 

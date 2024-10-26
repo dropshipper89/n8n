@@ -1,8 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
-import { Service } from 'typedi';
-import { ActiveWorkflows, NodeExecuteFunctions } from 'n8n-core';
-
+import { ActiveWorkflows, InstanceSettings, NodeExecuteFunctions } from 'n8n-core';
 import type {
 	ExecutionError,
 	IDeferredPromise,
@@ -25,30 +23,32 @@ import {
 	WebhookPathTakenError,
 	ApplicationError,
 } from 'n8n-workflow';
+import { Service } from 'typedi';
 
-import type { IWorkflowDb } from '@/interfaces';
-import * as WebhookHelpers from '@/webhooks/webhook-helpers';
-import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
-
-import type { WorkflowEntity } from '@/databases/entities/workflow-entity';
+import { ActivationErrorsService } from '@/activation-errors.service';
 import { ActiveExecutions } from '@/active-executions';
-import { ExecutionService } from './executions/execution.service';
 import {
 	STARTING_NODES,
 	WORKFLOW_REACTIVATE_INITIAL_TIMEOUT,
 	WORKFLOW_REACTIVATE_MAX_TIMEOUT,
 } from '@/constants';
-import { NodeTypes } from '@/node-types';
-import { ExternalHooks } from '@/external-hooks';
-import { WebhookService } from '@/webhooks/webhook.service';
-import { Logger } from './logger';
+import type { WorkflowEntity } from '@/databases/entities/workflow-entity';
 import { WorkflowRepository } from '@/databases/repositories/workflow.repository';
-import { OrchestrationService } from '@/services/orchestration.service';
-import { ActivationErrorsService } from '@/activation-errors.service';
+import { OnShutdown } from '@/decorators/on-shutdown';
+import { ExternalHooks } from '@/external-hooks';
+import type { IWorkflowDb } from '@/interfaces';
+import { Logger } from '@/logging/logger.service';
+import { NodeTypes } from '@/node-types';
 import { ActiveWorkflowsService } from '@/services/active-workflows.service';
+import { OrchestrationService } from '@/services/orchestration.service';
+import * as WebhookHelpers from '@/webhooks/webhook-helpers';
+import { WebhookService } from '@/webhooks/webhook.service';
+import * as WorkflowExecuteAdditionalData from '@/workflow-execute-additional-data';
 import { WorkflowExecutionService } from '@/workflows/workflow-execution.service';
 import { WorkflowStaticDataService } from '@/workflows/workflow-static-data.service';
-import { OnShutdown } from '@/decorators/on-shutdown';
+
+import { ExecutionService } from './executions/execution.service';
+import { Publisher } from './scaling/pubsub/publisher.service';
 
 interface QueuedActivation {
 	activationMode: WorkflowActivateMode;
@@ -75,6 +75,8 @@ export class ActiveWorkflowManager {
 		private readonly workflowStaticDataService: WorkflowStaticDataService,
 		private readonly activeWorkflowsService: ActiveWorkflowsService,
 		private readonly workflowExecutionService: WorkflowExecutionService,
+		private readonly instanceSettings: InstanceSettings,
+		private readonly publisher: Publisher,
 	) {}
 
 	async init() {
@@ -424,7 +426,7 @@ export class ActiveWorkflowManager {
 
 		if (dbWorkflows.length === 0) return;
 
-		if (this.orchestrationService.isLeader) {
+		if (this.instanceSettings.isLeader) {
 			this.logger.info(' ================================');
 			this.logger.info('   Start Active Workflows:');
 			this.logger.info(' ================================');
@@ -517,8 +519,9 @@ export class ActiveWorkflowManager {
 		{ shouldPublish } = { shouldPublish: true },
 	) {
 		if (this.orchestrationService.isMultiMainSetupEnabled && shouldPublish) {
-			await this.orchestrationService.publish('add-webhooks-triggers-and-pollers', {
-				workflowId,
+			void this.publisher.publishCommand({
+				command: 'add-webhooks-triggers-and-pollers',
+				payload: { workflowId },
 			});
 
 			return;
@@ -526,8 +529,8 @@ export class ActiveWorkflowManager {
 
 		let workflow: Workflow;
 
-		const shouldAddWebhooks = this.orchestrationService.shouldAddWebhooks(activationMode);
-		const shouldAddTriggersAndPollers = this.orchestrationService.shouldAddTriggersAndPollers();
+		const shouldAddWebhooks = this.shouldAddWebhooks(activationMode);
+		const shouldAddTriggersAndPollers = this.shouldAddTriggersAndPollers();
 
 		const shouldDisplayActivationMessage =
 			(shouldAddWebhooks || shouldAddTriggersAndPollers) &&
@@ -717,7 +720,10 @@ export class ActiveWorkflowManager {
 				);
 			}
 
-			await this.orchestrationService.publish('remove-triggers-and-pollers', { workflowId });
+			void this.publisher.publishCommand({
+				command: 'remove-triggers-and-pollers',
+				payload: { workflowId },
+			});
 
 			return;
 		}
@@ -751,7 +757,7 @@ export class ActiveWorkflowManager {
 		const wasRemoved = await this.activeWorkflows.remove(workflowId);
 
 		if (wasRemoved) {
-			this.logger.warn(`Removed triggers and pollers for workflow "${workflowId}"`, {
+			this.logger.debug(`Removed triggers and pollers for workflow "${workflowId}"`, {
 				workflowId,
 			});
 		}
@@ -809,5 +815,30 @@ export class ActiveWorkflowManager {
 
 	async removeActivationError(workflowId: string) {
 		await this.activationErrorsService.deregister(workflowId);
+	}
+
+	/**
+	 * Whether this instance may add webhooks to the `webhook_entity` table.
+	 */
+	shouldAddWebhooks(activationMode: WorkflowActivateMode) {
+		// Always try to populate the webhook entity table as well as register the webhooks
+		// to prevent issues with users upgrading from a version < 1.15, where the webhook entity
+		// was cleared on shutdown to anything past 1.28.0, where we stopped populating it on init,
+		// causing all webhooks to break
+		if (activationMode === 'init') return true;
+
+		if (activationMode === 'leadershipChange') return false;
+
+		return this.instanceSettings.isLeader; // 'update' or 'activate'
+	}
+
+	/**
+	 * Whether this instance may add triggers and pollers to memory.
+	 *
+	 * In both single- and multi-main setup, only the leader is allowed to manage
+	 * triggers and pollers in memory, to ensure they are not duplicated.
+	 */
+	shouldAddTriggersAndPollers() {
+		return this.instanceSettings.isLeader;
 	}
 }

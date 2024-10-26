@@ -13,14 +13,26 @@ import { useSettingsStore } from '@/stores/settings.store';
 import { defaultSettings } from '../../__tests__/defaults';
 import { merge } from 'lodash-es';
 import { DEFAULT_POSTHOG_SETTINGS } from './posthog.test';
-import { AI_ASSISTANT_EXPERIMENT } from '@/constants';
+import { AI_ASSISTANT_EXPERIMENT, VIEWS } from '@/constants';
 import { reactive } from 'vue';
-import * as chatAPI from '@/api/assistant';
+import * as chatAPI from '@/api/ai';
+import * as telemetryModule from '@/composables/useTelemetry';
+import type { Telemetry } from '@/plugins/telemetry';
+import type { ChatUI } from 'n8n-design-system/types/assistant';
 
 let settingsStore: ReturnType<typeof useSettingsStore>;
 let posthogStore: ReturnType<typeof usePostHog>;
 
 const apiSpy = vi.spyOn(chatAPI, 'chatWithAssistant');
+
+const track = vi.fn();
+const spy = vi.spyOn(telemetryModule, 'useTelemetry');
+spy.mockImplementation(
+	() =>
+		({
+			track,
+		}) as unknown as Telemetry,
+);
 
 const setAssistantEnabled = (enabled: boolean) => {
 	settingsStore.setSettings(
@@ -30,14 +42,16 @@ const setAssistantEnabled = (enabled: boolean) => {
 	);
 };
 
+let currentRouteName = ENABLED_VIEWS[0];
 vi.mock('vue-router', () => ({
 	useRoute: vi.fn(() =>
 		reactive({
 			path: '/',
 			params: {},
-			name: ENABLED_VIEWS[0],
+			name: currentRouteName,
 		}),
 	),
+	useRouter: vi.fn(),
 	RouterLink: vi.fn(),
 }));
 
@@ -63,6 +77,7 @@ describe('AI Assistant store', () => {
 		};
 		posthogStore = usePostHog();
 		posthogStore.init();
+		track.mockReset();
 	});
 
 	it('initializes with default values', () => {
@@ -271,8 +286,9 @@ describe('AI Assistant store', () => {
 
 		mockPostHogVariant('control');
 		setAssistantEnabled(true);
+		expect(assistantStore.isAssistantEnabled).toBe(false);
 		expect(assistantStore.canShowAssistant).toBe(false);
-		expect(assistantStore.canShowAssistantButtons).toBe(false);
+		expect(assistantStore.canShowAssistantButtonsOnCanvas).toBe(false);
 	});
 
 	it('should not show assistant if disabled in settings', () => {
@@ -280,8 +296,9 @@ describe('AI Assistant store', () => {
 
 		mockPostHogVariant('variant');
 		setAssistantEnabled(false);
+		expect(assistantStore.isAssistantEnabled).toBe(false);
 		expect(assistantStore.canShowAssistant).toBe(false);
-		expect(assistantStore.canShowAssistantButtons).toBe(false);
+		expect(assistantStore.canShowAssistantButtonsOnCanvas).toBe(false);
 	});
 
 	it('should show assistant if all conditions are met', () => {
@@ -289,8 +306,33 @@ describe('AI Assistant store', () => {
 
 		setAssistantEnabled(true);
 		mockPostHogVariant('variant');
+		expect(assistantStore.isAssistantEnabled).toBe(true);
 		expect(assistantStore.canShowAssistant).toBe(true);
-		expect(assistantStore.canShowAssistantButtons).toBe(true);
+		expect(assistantStore.canShowAssistantButtonsOnCanvas).toBe(true);
+	});
+
+	it('should not show assistant if on a settings page', () => {
+		currentRouteName = VIEWS.SSO_SETTINGS;
+		const assistantStore = useAssistantStore();
+
+		setAssistantEnabled(true);
+		mockPostHogVariant('variant');
+		expect(assistantStore.isAssistantEnabled).toBe(true);
+		expect(assistantStore.canShowAssistant).toBe(false);
+		expect(assistantStore.canShowAssistantButtonsOnCanvas).toBe(false);
+	});
+
+	[VIEWS.PROJECTS_CREDENTIALS, VIEWS.TEMPLATE_SETUP, VIEWS.CREDENTIALS].forEach((view) => {
+		it(`should show assistant if on ${view} page`, () => {
+			currentRouteName = VIEWS.PROJECTS_CREDENTIALS;
+			const assistantStore = useAssistantStore();
+
+			setAssistantEnabled(true);
+			mockPostHogVariant('variant');
+			expect(assistantStore.isAssistantEnabled).toBe(true);
+			expect(assistantStore.canShowAssistant).toBe(true);
+			expect(assistantStore.canShowAssistantButtonsOnCanvas).toBe(false);
+		});
 	});
 
 	it('should initialize assistant chat session on node error', async () => {
@@ -312,5 +354,138 @@ describe('AI Assistant store', () => {
 		const assistantStore = useAssistantStore();
 		await assistantStore.initErrorHelper(context);
 		expect(apiSpy).toHaveBeenCalled();
+	});
+
+	it('should call telemetry for opening assistant with error', async () => {
+		const context: ChatRequest.ErrorContext = {
+			error: {
+				description: '',
+				message: 'Hey',
+				name: 'NodeOperationError',
+			},
+			node: {
+				id: '1',
+				type: 'n8n-nodes-base.stopAndError',
+				typeVersion: 1,
+				name: 'Stop and Error',
+				position: [250, 250],
+				parameters: {},
+			},
+		};
+		const mockSessionId = 'test';
+
+		const assistantStore = useAssistantStore();
+		apiSpy.mockImplementation((_ctx, _payload, onMessage) => {
+			onMessage({
+				messages: [],
+				sessionId: mockSessionId,
+			});
+		});
+
+		await assistantStore.initErrorHelper(context);
+		expect(apiSpy).toHaveBeenCalled();
+		expect(assistantStore.currentSessionId).toEqual(mockSessionId);
+
+		assistantStore.trackUserOpenedAssistant({
+			task: 'error',
+			source: 'error',
+			has_existing_session: true,
+		});
+		expect(track).toHaveBeenCalledWith(
+			'Assistant session started',
+			{
+				chat_session_id: 'test',
+				node_type: 'n8n-nodes-base.stopAndError',
+				task: 'error',
+				credential_type: undefined,
+			},
+			{
+				withPostHog: true,
+			},
+		);
+
+		expect(track).toHaveBeenCalledWith('User opened assistant', {
+			chat_session_id: 'test',
+			error: {
+				description: '',
+				message: 'Hey',
+				name: 'NodeOperationError',
+			},
+			has_existing_session: true,
+			node_type: 'n8n-nodes-base.stopAndError',
+			source: 'error',
+			task: 'error',
+			workflow_id: '__EMPTY__',
+		});
+	});
+
+	it('should call the function again if retry is called after handleServiceError', async () => {
+		const mockFn = vi.fn();
+
+		const assistantStore = useAssistantStore();
+
+		assistantStore.handleServiceError(new Error('test error'), '125', mockFn);
+		expect(assistantStore.chatMessages.length).toBe(1);
+		const message = assistantStore.chatMessages[0];
+		expect(message.type).toBe('error');
+
+		const errorMessage = message as ChatUI.ErrorMessage;
+		expect(errorMessage.retry).toBeDefined();
+
+		// This simulates the button click from the UI
+		await errorMessage.retry?.();
+
+		expect(mockFn).toHaveBeenCalled();
+	});
+
+	it('should properly clear messages on retry in a chat session', async () => {
+		const assistantStore = useAssistantStore();
+		const mockSessionId = 'mockSessionId';
+
+		const message: ChatRequest.MessageResponse = {
+			type: 'message',
+			role: 'assistant',
+			text: 'Hello!',
+			quickReplies: [
+				{ text: 'Yes', type: 'text' },
+				{ text: 'No', type: 'text' },
+			],
+		};
+
+		apiSpy.mockImplementationOnce((_ctx, _payload, onMessage, onDone) => {
+			onMessage({ messages: [message], sessionId: mockSessionId });
+			onDone();
+		});
+		apiSpy.mockImplementationOnce((_ctx, _payload, _onMessage, _onDone, onError) =>
+			onError(new Error('test error')),
+		);
+		apiSpy.mockImplementationOnce((_ctx, _payload, onMessage, onDone) => {
+			onMessage({ messages: [message], sessionId: mockSessionId });
+			onDone();
+		});
+
+		await assistantStore.initSupportChat('hello');
+
+		expect(assistantStore.chatMessages.length).toBe(2);
+		expect(assistantStore.chatMessages[0].type).toBe('text');
+		expect(assistantStore.chatMessages[1].type).toBe('text');
+
+		await assistantStore.sendMessage({ text: 'test' });
+
+		expect(assistantStore.chatMessages.length).toBe(4);
+		expect(assistantStore.chatMessages[0].type).toBe('text');
+		expect(assistantStore.chatMessages[1].type).toBe('text');
+		expect(assistantStore.chatMessages[2].type).toBe('text');
+		expect(assistantStore.chatMessages[3].type).toBe('error');
+
+		expect(assistantStore.chatMessages[3]).toHaveProperty('retry');
+		// This simulates the functionality triggered from the consumer (e.g. UI Button)
+		await (assistantStore.chatMessages[3] as ChatUI.ErrorMessage).retry?.();
+
+		expect(assistantStore.chatMessages.length).toBe(4);
+		expect(assistantStore.chatMessages[0].type).toBe('text');
+		expect(assistantStore.chatMessages[1].type).toBe('text');
+		expect(assistantStore.chatMessages[2].type).toBe('text');
+		expect(assistantStore.chatMessages[3].type).toBe('text');
 	});
 });

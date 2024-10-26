@@ -1,12 +1,14 @@
-import type { SecretsProviderSettings, SecretsProviderState } from '@/interfaces';
-import { SecretsProvider } from '@/interfaces';
-import type { IDataObject, INodeProperties } from 'n8n-workflow';
 import type { AxiosInstance, AxiosResponse } from 'axios';
 import axios from 'axios';
-import { Logger } from '@/logger';
+import type { IDataObject, INodeProperties } from 'n8n-workflow';
+import { Container } from 'typedi';
+
+import type { SecretsProviderSettings, SecretsProviderState } from '@/interfaces';
+import { SecretsProvider } from '@/interfaces';
+import { Logger } from '@/logging/logger.service';
+
 import { DOCS_HELP_NOTICE, EXTERNAL_SECRETS_NAME_REGEX } from '../constants';
 import { preferGet } from '../external-secrets-helper.ee';
-import { Container } from 'typedi';
 
 type VaultAuthMethod = 'token' | 'usernameAndPassword' | 'appRole';
 
@@ -235,6 +237,7 @@ export class VaultProvider extends SecretsProvider {
 
 	constructor(readonly logger = Container.get(Logger)) {
 		super();
+		this.logger = this.logger.scoped('external-secrets');
 	}
 
 	async init(settings: SecretsProviderSettings): Promise<void> {
@@ -255,6 +258,8 @@ export class VaultProvider extends SecretsProvider {
 			}
 			return config;
 		});
+
+		this.logger.debug('Vault provider initialized');
 	}
 
 	async connect(): Promise<void> {
@@ -406,6 +411,7 @@ export class VaultProvider extends SecretsProvider {
 		kvVersion: string,
 		path: string,
 	): Promise<[string, IDataObject] | null> {
+		this.logger.debug(`Getting kv secrets from ${mountPath}${path} (version ${kvVersion})`);
 		let listPath = mountPath;
 		if (kvVersion === '2') {
 			listPath += 'metadata/';
@@ -439,6 +445,7 @@ export class VaultProvider extends SecretsProvider {
 						secretPath += path + key;
 						try {
 							const secretResp = await this.#http.get<VaultResponse<IDataObject>>(secretPath);
+							this.logger.debug(`Vault provider retrieved secrets from ${secretPath}`);
 							return [
 								key,
 								kvVersion === '2'
@@ -455,6 +462,7 @@ export class VaultProvider extends SecretsProvider {
 				.filter((v): v is [string, IDataObject] => v !== null),
 		);
 		const name = path.substring(0, path.length - 1);
+		this.logger.debug(`Vault provider retrieved kv secrets from ${name}`);
 		return [name, data];
 	}
 
@@ -477,6 +485,7 @@ export class VaultProvider extends SecretsProvider {
 			).filter((v): v is [string, IDataObject] => v !== null),
 		);
 		this.cachedSecrets = secrets;
+		this.logger.debug('Vault provider secrets updated');
 	}
 
 	async test(): Promise<[boolean] | [boolean, string]> {
